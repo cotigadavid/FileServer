@@ -8,6 +8,7 @@
 #include <sstream>
 
 #include "network.h"
+#include "authmanager.h"
 
 // ssize_t recv_all(int sockfd, char *buf, size_t len) {
 //     size_t total = 0;
@@ -167,6 +168,160 @@ int get_file(const int sockfd, const std::string& filepath) {
     return 0;
 }
 
+int send_create_credentials(const int sockfd, const std::string& username, const std::string& password) {
+    char command_buffer[] = "crte";
+    if (send(sockfd, command_buffer, sizeof(command_buffer), 0) == -1) {
+        perror("send command type");
+        close(sockfd);
+        return -1;
+    }
+
+    uint32_t username_len = htonl(username.size());
+    if (send(sockfd, &username_len, sizeof(username_len), 0) == -1) {
+        perror("send username len failed");
+        close(sockfd);
+        return -1;
+    }
+
+    if (send(sockfd, username.c_str(), username.size(), 0) == -1) {
+        perror("send username failed");
+        close(sockfd);
+        return -1;
+    }
+
+    uint32_t password_len = htonl(password.size());
+    if (send(sockfd, &password_len, sizeof(password_len), 0) == -1) {
+        perror("send password len failed");
+        close(sockfd);
+        return -1;
+    }
+
+    if (send(sockfd, password.c_str(), password.size(), 0) == -1) {
+        perror("send password failed");
+        close(sockfd);
+        return -1;
+    }
+
+    uint32_t feedback_len_net = 0;
+    if (Network::recv_all(sockfd, (char*)&feedback_len_net, sizeof(feedback_len_net)) <= 0) {
+        perror("failed to read feedback len");
+        close(sockfd);
+        return -1;
+    }
+
+    uint32_t feedback_len = ntohl(feedback_len_net);
+    if (feedback_len > 10 * 1024) { // limit feedback to 10KB
+        std::cerr << "feedback too large: " << feedback_len << "\n";
+        close(sockfd);
+        return -1;
+    }
+
+    std::string feedback;
+    feedback.resize(feedback_len);
+    if (Network::recv_all(sockfd, feedback.data(), feedback_len) <= 0) {
+        perror("failed to receive feedback");
+        close(sockfd);
+        return -1;
+    }
+
+    std::cout << feedback << "\n";
+    return 0;
+}
+
+int send_login_credentials(const int sockfd, const std::string& username, const std::string& password) {
+    char command_buffer[] = "lgin";
+    if (send(sockfd, command_buffer, sizeof(command_buffer), 0) == -1) {
+        perror("send command type");
+        close(sockfd);
+        return -1;
+    }
+
+    uint32_t username_len = htonl(username.size());
+    if (send(sockfd, &username_len, sizeof(username_len), 0) == -1) {
+        perror("send username len failed");
+        close(sockfd);
+        return -1;
+    }
+
+    if (send(sockfd, username.c_str(), username.size(), 0) == -1) {
+        perror("send username failed");
+        close(sockfd);
+        return -1;
+    }
+
+    uint32_t password_len = htonl(password.size());
+    if (send(sockfd, &password_len, sizeof(password_len), 0) == -1) {
+        perror("send password len failed");
+        close(sockfd);
+        return -1;
+    }
+
+    if (send(sockfd, password.c_str(), password.size(), 0) == -1) {
+        perror("send password failed");
+        close(sockfd);
+        return -1;
+    }
+
+    uint32_t feedback_len_net = 0;
+    if (Network::recv_all(sockfd, (char*)&feedback_len_net, sizeof(feedback_len_net)) <= 0) {
+        perror("failed to read feedback len");
+        close(sockfd);
+        return -1;
+    }
+
+    uint32_t feedback_len = ntohl(feedback_len_net);
+    if (feedback_len > 10 * 1024) { // limit feedback to 10KB
+        std::cerr << "feedback too large: " << feedback_len << "\n";
+        close(sockfd);
+        return -1;
+    }
+
+    std::string feedback;
+    feedback.resize(feedback_len);
+    if (Network::recv_all(sockfd, feedback.data(), feedback_len) <= 0) {
+        perror("failed to receive feedback");
+        close(sockfd);
+        return -1;
+    }
+
+    std::cout << feedback << "\n";
+
+    uint32_t token_len_net = 0;
+    if (Network::recv_all(sockfd, (char*)&token_len_net, sizeof(token_len_net)) <= 0) {
+        perror("failed to read token len");
+        close(sockfd);
+        return -1;
+    }
+
+    uint32_t token_len = ntohl(token_len_net);
+    if (token_len == 0 || token_len > 4096) { // sanity check token size
+        std::cerr << "invalid token length: " << token_len << "\n";
+        close(sockfd);
+        return -1;
+    }
+
+    std::string token;
+    token.resize(token_len);
+    if (Network::recv_all(sockfd, token.data(), token_len) <= 0) {
+        perror("failed to receive token");
+        close(sockfd);
+        return -1;
+    }
+
+    std::cout << "Token: " << token << "\n";
+    return 0;
+}
+
+int send_logout(const int sockfd) {
+    char command_buffer[] = "lgou";
+    if (send(sockfd, command_buffer, sizeof(command_buffer), 0) == -1) {
+        perror("send command type");
+        close(sockfd);
+        return -1;
+    }
+    return 0;
+}
+
 int main() {
 
     std::string line;
@@ -220,6 +375,30 @@ int main() {
             else 
                 get_file(sockfd, filename);  
         } 
+        else if (command == "create_user") {
+            std::string username, password;
+            std::cout << "username: ";
+            std::getline(std::cin, username);
+            std::cout << "password: ";
+            std::getline(std::cin, password);
+            
+            send_create_credentials(sockfd, username, password);
+        }
+
+        else if (command == "login") {
+            std::string username, password;
+            std::cout << "username: ";
+            std::getline(std::cin, username);
+            std::cout << "password: ";
+            std::getline(std::cin, password);
+            
+            send_login_credentials(sockfd, username, password);
+        }
+
+        else if (command == "logout") {
+            send_logout(sockfd);
+        }
+
         else if (command == "quit") {
             std::cout << "Disconnecting from server.\n";
             // Optionally, send a "QUIT" message to the server so it knows

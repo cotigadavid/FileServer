@@ -7,6 +7,8 @@
 
 #include "threadpool.h"
 #include "network.h"
+#include "database.h"
+#include "authmanager.h"
 
 // ssize_t recv_all(int sockfd, char *buf, size_t len) {
 //     size_t total = 0;
@@ -24,17 +26,16 @@
 //     return total;
 // }
 
+void initialize_schema(Database& db);
+
 int get_file(int client_fd) {
 
-    std::cout << "GET\n";
     uint32_t filename_len_net = 0;
     if (Network::recv_all(client_fd, (char*)&filename_len_net, sizeof(filename_len_net)) <= 0) {
         perror("failed to read filenam len");
         close(client_fd);
         return -1;
     }
-
-    std::cout << "AFTER\n";
 
     uint32_t filename_len = ntohl(filename_len_net);
 
@@ -193,7 +194,141 @@ int send_file(int client_fd) {
     return 0;
 }
 
+int create_user(AuthManager* auth_manager, const int client_fd) {
+    uint32_t username_len_net = 0;
+    if (Network::recv_all(client_fd, (char*)&username_len_net, sizeof(username_len_net)) <= 0) {
+        perror("failed to read username len");
+        close(client_fd);
+        return -1;
+    }
+
+    uint32_t username_len = ntohl(username_len_net);
+
+    char username_buffer[256] = {0};
+    if (Network::recv_all(client_fd, username_buffer, username_len) <= 0) {
+        perror("failed to receive username");
+        close(client_fd);
+        return -1;
+    }
+
+    uint32_t password_len_net = 0;
+    if (Network::recv_all(client_fd, (char*)&password_len_net, sizeof(password_len_net)) <= 0) {
+        perror("failed to read password len");
+        close(client_fd);
+        return -1;
+    }
+
+    uint32_t password_len = ntohl(password_len_net);
+
+    char password_buffer[256] = {0};
+    if (Network::recv_all(client_fd, password_buffer, password_len) <= 0) {
+        perror("failed to receive password");
+        close(client_fd);
+        return -1;
+    }
+
+    std::string username(username_buffer, username_len);
+    std::string password(password_buffer, password_len);
+    bool ok = auth_manager->register_user(username, password);
+
+    std::string message = ok ? "User Created" : "Create user failed";
+    if (Network::send_string(client_fd, message, "create_user_feedback") != 0) {
+        // if sending feedback fails, just log
+        perror("send feedback failed");
+    }
+
+    return ok ? 0 : -1;
+}
+
+int login(AuthManager* auth_manager, const int client_fd) {
+
+    std::cout << "login\n";
+
+    uint32_t username_len_net = 0;
+    if (Network::recv_all(client_fd, (char*)&username_len_net, sizeof(username_len_net)) <= 0) {
+        perror("failed to read username len");
+        close(client_fd);
+        return -1;
+    }
+
+    uint32_t username_len = ntohl(username_len_net);
+
+    char username_buffer[256] = {0};
+    if (Network::recv_all(client_fd, username_buffer, username_len) <= 0) {
+        perror("failed to receive username");
+        close(client_fd);
+        return -1;
+    }
+
+    uint32_t password_len_net = 0;
+    if (Network::recv_all(client_fd, (char*)&password_len_net, sizeof(password_len_net)) <= 0) {
+        perror("failed to read password len");
+        close(client_fd);
+        return -1;
+    }
+
+    std::cout << "here\n";
+
+    uint32_t password_len = ntohl(password_len_net);
+
+    char password_buffer[256] = {0};
+    if (Network::recv_all(client_fd, password_buffer, password_len) <= 0) {
+        perror("failed to receive password");
+        close(client_fd);
+        return -1;
+    }
+
+    std::string username(username_buffer, username_len);
+    std::string password(password_buffer, password_len);
+
+    std::optional<std::string> token = auth_manager->login(username, password);
+    if (token == std::nullopt) {
+        std::string err("Login failed");
+        Network::send_string(client_fd, err, "login_feedback");
+        return -1;
+    }
+
+    // SEND FEEDBACK
+    std::string ok_msg("Login successful");
+    if (Network::send_string(client_fd, ok_msg, "login_feedback") != 0) {
+        perror("send login feedback failed");
+        return -1;
+    }
+
+    // SEND TOKEN (as length-prefixed string)
+    if (Network::send_string(client_fd, token.value(), "token") != 0) {
+        perror("send token failed");
+        return -1;
+    }
+
+    return 0;
+}
+
+int logout(AuthManager* auth_manager, const int client_fd) {
+    // RECEIVE TOKEN
+
+    //SEND FEEDBACK
+}
+
 int main() {
+    Database* db = nullptr;
+    AuthManager* auth_manager = nullptr;
+
+    try {
+        db = new Database("server.db");   // creates the file if not exists
+        initialize_schema(*db);
+
+        std::cout << "Database initialized successfully.\n";
+
+        auth_manager = new AuthManager(db->get_handle());
+
+    } catch (const std::exception& ex) {
+        std::cerr << "Fatal error: " << ex.what() << "\n";
+        delete auth_manager;
+        delete db;
+        return 1;
+    }
+    
     int server_fd, client_fd;
     struct sockaddr_in server_addr;
     struct sockaddr_in client_addr;
@@ -245,7 +380,7 @@ int main() {
         std::cout << "Client connected\n";
 
         // Submit client handling to thread pool
-        pool.submit([client_fd]() {
+        pool.submit([client_fd, auth_manager]() {
             char command[5] = {0};
             if (Network::recv_all(client_fd, command, 5) <= 0) {
                 perror("failed to receive command");
@@ -261,6 +396,16 @@ int main() {
             else if (strcmp(command, "get.") == 0) {
                 send_file(client_fd);
             }
+            else if (strcmp(command, "crte") == 0) {
+                create_user(auth_manager, client_fd);
+            }
+            else if (strcmp(command, "lgin") == 0) {
+                std::cout << "hey\n\n";
+                login(auth_manager, client_fd);
+            }
+            else if (strcmp(command, "lgou") == 0) {
+                logout(auth_manager, client_fd);
+            }
 
             std::cout << "Closing connection\n";
             close(client_fd);
@@ -268,6 +413,17 @@ int main() {
     }
 
     close(server_fd);
+    
+    delete auth_manager;
+    delete db;
 
     return 0;
 }
+
+
+
+// MAKE SERVER AND CLIENT CLASSES
+// FILE FOLDERS STRUCTURE
+// MORE FUNCTIONS - FUNCTION TO SEND NEAPARAT AND RECEIVE
+// CHECKS - WHEN CALLING INT FUNCTIONS
+// FEEDBACK EVERYWHERE

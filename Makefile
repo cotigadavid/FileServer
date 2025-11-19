@@ -1,49 +1,63 @@
 # Compiler and flags
 CXX = g++
 CXXFLAGS = -std=c++17 -Wall -Wextra -pthread
-LDFLAGS = -pthread
+CLIENT_LDFLAGS = -pthread -lsodium
+SERVER_LDFLAGS = -pthread -lsqlite3 -lsodium
 
 # Directories
 CLIENT_DIR = client
 SERVER_DIR = server
-NETWORK_DIR = network
+DATABASE_DIR = database
+AUTH_DIR = auth
 
 # Output executables
 CLIENT_BIN = $(CLIENT_DIR)/client
 SERVER_BIN = $(SERVER_DIR)/server
 
-# Source files - automatically find all .cpp files
-CLIENT_SRC = $(wildcard $(CLIENT_DIR)/*.cpp)
-SERVER_SRC = $(wildcard $(SERVER_DIR)/*.cpp)
-NETWORK_SRC = $(wildcard $(NETWORK_DIR)/*.cpp)
+# Recursive wildcard function to find all .cpp files
+rwildcard = $(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(subst *,%,$2),$d))
+
+# Find all .cpp files recursively (strip ./ prefix for proper filtering)
+ALL_SRC = $(patsubst ./%,%,$(call rwildcard,.,*.cpp))
+
+# Separate client and server sources
+CLIENT_SRC = $(filter $(CLIENT_DIR)/%,$(ALL_SRC))
+SERVER_SRC = $(filter $(SERVER_DIR)/%,$(ALL_SRC))
+
+# Find database sources - only for server
+DATABASE_SRC = $(filter $(DATABASE_DIR)/%,$(ALL_SRC))
+
+# Find auth sources - only for server
+AUTH_SRC = $(filter $(AUTH_DIR)/%,$(ALL_SRC))
+
+# Find all other sources (network, utils, etc.) - exclude client, server, database, and auth
+COMMON_SRC = $(filter-out $(CLIENT_DIR)/% $(SERVER_DIR)/% $(DATABASE_DIR)/% $(AUTH_DIR)/%,$(ALL_SRC))
 
 # Object files - convert .cpp to .o
 CLIENT_OBJ = $(CLIENT_SRC:.cpp=.o)
 SERVER_OBJ = $(SERVER_SRC:.cpp=.o)
-NETWORK_OBJ = $(NETWORK_SRC:.cpp=.o)
+DATABASE_OBJ = $(DATABASE_SRC:.cpp=.o)
+AUTH_OBJ = $(AUTH_SRC:.cpp=.o)
+COMMON_OBJ = $(COMMON_SRC:.cpp=.o)
+
+# Get all unique directories for include paths
+ALL_DIRS = $(sort $(dir $(ALL_SRC)))
+INCLUDE_FLAGS = $(addprefix -I,$(ALL_DIRS))
 
 # Default target - build both client and server
 all: $(CLIENT_BIN) $(SERVER_BIN)
 
 # Build client
-$(CLIENT_BIN): $(CLIENT_OBJ) $(NETWORK_OBJ)
-	$(CXX) $(LDFLAGS) -o $@ $^
+$(CLIENT_BIN): $(CLIENT_OBJ) $(COMMON_OBJ)
+	$(CXX) -o $@ $^ $(CLIENT_LDFLAGS)
 
 # Build server
-$(SERVER_BIN): $(SERVER_OBJ) $(NETWORK_OBJ)
-	$(CXX) $(LDFLAGS) -o $@ $^
+$(SERVER_BIN): $(SERVER_OBJ) $(COMMON_OBJ) $(DATABASE_OBJ) $(AUTH_OBJ)
+	$(CXX) -o $@ $^ $(SERVER_LDFLAGS)
 
-# Compile any .cpp file in client directory
-$(CLIENT_DIR)/%.o: $(CLIENT_DIR)/%.cpp
-	$(CXX) $(CXXFLAGS) -I$(NETWORK_DIR) -I$(SERVER_DIR) -c $< -o $@
-
-# Compile any .cpp file in server directory
-$(SERVER_DIR)/%.o: $(SERVER_DIR)/%.cpp
-	$(CXX) $(CXXFLAGS) -I$(NETWORK_DIR) -I$(SERVER_DIR) -c $< -o $@
-
-# Compile any .cpp file in network directory
-$(NETWORK_DIR)/%.o: $(NETWORK_DIR)/%.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+# Generic rule to compile any .cpp file
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDE_FLAGS) -c $< -o $@
 
 # Build only client
 client: $(CLIENT_BIN)
@@ -53,7 +67,7 @@ server: $(SERVER_BIN)
 
 # Clean build artifacts
 clean:
-	rm -f $(CLIENT_OBJ) $(SERVER_OBJ) $(NETWORK_OBJ) $(CLIENT_BIN) $(SERVER_BIN)
+	rm -f $(CLIENT_OBJ) $(SERVER_OBJ) $(DATABASE_OBJ) $(AUTH_OBJ) $(COMMON_OBJ) $(CLIENT_BIN) $(SERVER_BIN)
 
 # Clean and rebuild
 rebuild: clean all
@@ -66,4 +80,17 @@ run-client: $(CLIENT_BIN)
 run-server: $(SERVER_BIN)
 	./$(SERVER_BIN)
 
-.PHONY: all client server clean rebuild run-client run-server
+# Debug: print what we found (run with 'make debug')
+debug:
+	@echo "CLIENT_SRC: $(CLIENT_SRC)"
+	@echo "SERVER_SRC: $(SERVER_SRC)"
+	@echo "DATABASE_SRC: $(DATABASE_SRC)"
+	@echo "AUTH_SRC: $(AUTH_SRC)"
+	@echo "COMMON_SRC: $(COMMON_SRC)"
+	@echo "CLIENT_OBJ: $(CLIENT_OBJ)"
+	@echo "SERVER_OBJ: $(SERVER_OBJ)"
+	@echo "DATABASE_OBJ: $(DATABASE_OBJ)"
+	@echo "AUTH_OBJ: $(AUTH_OBJ)"
+	@echo "COMMON_OBJ: $(COMMON_OBJ)"
+
+.PHONY: all client server clean rebuild run-client run-server debug

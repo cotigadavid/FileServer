@@ -1,0 +1,67 @@
+# Build artifacts
+**/*.o
+**/*.obj
+**/*.so
+**/*.a
+**/*.dll
+**/*.dylib
+**/*.exe
+**/*.out
+
+# Compiled binaries (common places in this repo)
+client/client
+server/server
+
+# Database files
+server.db
+*.db
+
+# Build directories and IDE files
+build/
+out/
+dist/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+*.vcxproj*
+Makefile.user
+
+# Coverage and profiling
+coverage/
+*.gcno
+*.gcda
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
+*.pid
+*.seed
+
+# Editor/IDE
+.vscode/
+.idea/
+*.sublime-*
+*.code-workspace
+
+# Swap/backup files
+*~
+*.swp
+*.bak
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python/virtualenv (if used)
+venv/
+.env
+.envrc
+
+# Node
+node_modules/
+
+# Core dumps
+core
+core.*
