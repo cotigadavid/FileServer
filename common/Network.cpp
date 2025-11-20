@@ -1,4 +1,4 @@
-#include "network.h"
+#include "Network.h"
 
 #include <arpa/inet.h>
 #include <cstring>
@@ -76,11 +76,9 @@ int Network::recv_string(int client_fd, std::string& str, const std::string& deb
 }
 
 int Network::get_file(int client_fd) {
-    // ...existing code (if any)...
     return 0;
 }
 
 int Network::send_file(int client_fd) {
-    // ...existing code (if any)...
     return 0;
 }

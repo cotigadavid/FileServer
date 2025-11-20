@@ -1,4 +1,4 @@
-#include "database.h"
+#include "Database.h"
 
 void initialize_schema(Database& db) {
     db.exec(R"(

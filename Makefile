@@ -1,12 +1,13 @@
 # Compiler and flags
 CXX = g++
-CXXFLAGS = -std=c++17 -Wall -Wextra -pthread
+CXXFLAGS = -std=c++17 -Wall -Wextra -pthread -g
 CLIENT_LDFLAGS = -pthread -lsodium
 SERVER_LDFLAGS = -pthread -lsqlite3 -lsodium
 
 # Directories
 CLIENT_DIR = client
 SERVER_DIR = server
+COMMON_DIR = common
 DATABASE_DIR = database
 AUTH_DIR = auth
 
@@ -24,21 +25,21 @@ ALL_SRC = $(patsubst ./%,%,$(call rwildcard,.,*.cpp))
 CLIENT_SRC = $(filter $(CLIENT_DIR)/%,$(ALL_SRC))
 SERVER_SRC = $(filter $(SERVER_DIR)/%,$(ALL_SRC))
 
+# Find common sources - shared by both client and server
+COMMON_SRC = $(filter $(COMMON_DIR)/%,$(ALL_SRC))
+
 # Find database sources - only for server
 DATABASE_SRC = $(filter $(DATABASE_DIR)/%,$(ALL_SRC))
 
 # Find auth sources - only for server
 AUTH_SRC = $(filter $(AUTH_DIR)/%,$(ALL_SRC))
 
-# Find all other sources (network, utils, etc.) - exclude client, server, database, and auth
-COMMON_SRC = $(filter-out $(CLIENT_DIR)/% $(SERVER_DIR)/% $(DATABASE_DIR)/% $(AUTH_DIR)/%,$(ALL_SRC))
-
 # Object files - convert .cpp to .o
 CLIENT_OBJ = $(CLIENT_SRC:.cpp=.o)
 SERVER_OBJ = $(SERVER_SRC:.cpp=.o)
+COMMON_OBJ = $(COMMON_SRC:.cpp=.o)
 DATABASE_OBJ = $(DATABASE_SRC:.cpp=.o)
 AUTH_OBJ = $(AUTH_SRC:.cpp=.o)
-COMMON_OBJ = $(COMMON_SRC:.cpp=.o)
 
 # Get all unique directories for include paths
 ALL_DIRS = $(sort $(dir $(ALL_SRC)))
@@ -47,11 +48,11 @@ INCLUDE_FLAGS = $(addprefix -I,$(ALL_DIRS))
 # Default target - build both client and server
 all: $(CLIENT_BIN) $(SERVER_BIN)
 
-# Build client
+# Build client - client sources + common sources
 $(CLIENT_BIN): $(CLIENT_OBJ) $(COMMON_OBJ)
 	$(CXX) -o $@ $^ $(CLIENT_LDFLAGS)
 
-# Build server
+# Build server - server sources + common sources + auth + database
 $(SERVER_BIN): $(SERVER_OBJ) $(COMMON_OBJ) $(DATABASE_OBJ) $(AUTH_OBJ)
 	$(CXX) -o $@ $^ $(SERVER_LDFLAGS)
 
@@ -67,7 +68,7 @@ server: $(SERVER_BIN)
 
 # Clean build artifacts
 clean:
-	rm -f $(CLIENT_OBJ) $(SERVER_OBJ) $(DATABASE_OBJ) $(AUTH_OBJ) $(COMMON_OBJ) $(CLIENT_BIN) $(SERVER_BIN)
+	rm -f $(CLIENT_OBJ) $(SERVER_OBJ) $(COMMON_OBJ) $(DATABASE_OBJ) $(AUTH_OBJ) $(CLIENT_BIN) $(SERVER_BIN)
 
 # Clean and rebuild
 rebuild: clean all
@@ -84,13 +85,13 @@ run-server: $(SERVER_BIN)
 debug:
 	@echo "CLIENT_SRC: $(CLIENT_SRC)"
 	@echo "SERVER_SRC: $(SERVER_SRC)"
+	@echo "COMMON_SRC: $(COMMON_SRC)"
 	@echo "DATABASE_SRC: $(DATABASE_SRC)"
 	@echo "AUTH_SRC: $(AUTH_SRC)"
-	@echo "COMMON_SRC: $(COMMON_SRC)"
 	@echo "CLIENT_OBJ: $(CLIENT_OBJ)"
 	@echo "SERVER_OBJ: $(SERVER_OBJ)"
+	@echo "COMMON_OBJ: $(COMMON_OBJ)"
 	@echo "DATABASE_OBJ: $(DATABASE_OBJ)"
 	@echo "AUTH_OBJ: $(AUTH_OBJ)"
-	@echo "COMMON_OBJ: $(COMMON_OBJ)"
 
 .PHONY: all client server clean rebuild run-client run-server debug

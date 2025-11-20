@@ -1,4 +1,4 @@
-#include "database.h"
+#include "Database.h"
 
 Database::Database(const std::string& file) {
     if (sqlite3_open(file.c_str(), &db) != SQLITE_OK) {

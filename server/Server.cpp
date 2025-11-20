@@ -1,3 +1,9 @@
+#include "Server.h"
+#include "ThreadPool.h"
+#include "Network.h"
+#include "Database.h"
+#include "AuthManager.h"
+
 #include <iostream>
 #include <fstream>
 #include <cstring>
@@ -5,63 +11,183 @@
 #include <arpa/inet.h>
 #include <filesystem>
 
-#include "threadpool.h"
-#include "network.h"
-#include "database.h"
-#include "authmanager.h"
-
-// ssize_t recv_all(int sockfd, char *buf, size_t len) {
-//     size_t total = 0;
-//     ssize_t bytes_left = len;
-//     ssize_t n;
-
-//     while (total < len) {
-//         n = recv(sockfd, buf + total, bytes_left, 0);
-//         if (n <= 0) {
-//             return n;
-//         }
-//         total += n;
-//         bytes_left -= n;
-//     }
-//     return total;
-// }
-
 void initialize_schema(Database& db);
 
-int get_file(int client_fd) {
+Server::Server(int port, int num_threads)
+    : server_fd(-1), port(port), running(false),
+      thread_pool(nullptr), db(nullptr), auth_manager(nullptr)
+{
+    thread_pool = new ThreadPool(num_threads);
+}
 
+Server::~Server() {
+    stop();
+    delete auth_manager;
+    delete db;
+    delete thread_pool;
+}
+
+bool Server::initialize() {
+    try {
+        db = new Database("server.db");
+        initialize_schema(*db);
+        
+        std::cout << "Database initialized successfully.\n";
+        
+        auth_manager = new AuthManager(db->get_handle());
+        
+    } catch (const std::exception& ex) {
+        std::cerr << "Fatal error: " << ex.what() << "\n";
+        return false;
+    }
+
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd == -1) {
+        perror("socket failed");
+        return false;
+    }
+
+    int opt = 1;
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
+        perror("setsockopt failed");
+        close(server_fd);
+        return false;
+    }
+
+    struct sockaddr_in server_addr;
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(port);
+    memset(&(server_addr.sin_zero), '\0', 8);
+
+    if (bind(server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
+        close(server_fd);
+        perror("bind failed");
+        return false;
+    }
+
+    if (listen(server_fd, 5) == -1) {
+        close(server_fd);
+        perror("listen failed");
+        return false;
+    }
+
+    running = true;
+    return true;
+}
+
+void Server::run() {
+    if (!running) {
+        std::cerr << "Server not initialized. Call initialize() first.\n";
+        return;
+    }
+
+    struct sockaddr_in client_addr;
+    socklen_t client_len = sizeof(client_addr);
+
+    while (running) {
+        std::cout << "Server listening on port " << port << "...\n";
+
+        int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
+
+        if (client_fd == -1) {
+            perror("accept failed");
+            continue;
+        }
+        
+        std::cout << "Client connected\n";
+
+        // Capture necessary state for the worker thread
+        AuthManager* auth_ptr = auth_manager;
+        
+        thread_pool->submit([client_fd, auth_ptr, this]() {
+            this->handleClient(client_fd);
+        });
+    }
+}
+
+void Server::stop() {
+    running = false;
+    if (server_fd != -1) {
+        close(server_fd);
+        server_fd = -1;
+    }
+}
+
+void Server::handleClient(int client_fd) {
+    char command[5] = {0};
+    if (Network::recv_all(client_fd, command, 5) <= 0) {
+        perror("failed to receive command");
+        close(client_fd);
+        return;
+    }
+
+    std::cout << "Command: " << command << "\n";
+
+    try {
+        std::cout << "About to handle command\n";
+        handleCommand(client_fd, command);
+        std::cout << "Command handled successfully\n";
+    } catch (const std::exception& ex) {
+        std::cerr << "Exception in handleCommand: " << ex.what() << "\n";
+    } catch (...) {
+        std::cerr << "Unknown exception in handleCommand\n";
+    }
+
+    std::cout << "Closing connection\n";
+    close(client_fd);
+}
+
+void Server::handleCommand(int client_fd, const char* command) {
+    std::cout << "handleCommand called with: " << command << "\n";
+    
+    if (strcmp(command, "send") == 0) {
+        handleGetFile(client_fd);
+    }
+    else if (strcmp(command, "get.") == 0) {
+        handleSendFile(client_fd);
+    }
+    else if (strcmp(command, "crte") == 0) {
+        handleCreateUser(client_fd);
+    }
+    else if (strcmp(command, "lgin") == 0) {
+        handleLogin(client_fd);
+    }
+    else if (strcmp(command, "lgou") == 0) {
+        handleLogout(client_fd);
+    }
+    else {
+        std::cerr << "Unknown command: " << command << "\n";
+    }
+    
+    std::cout << "handleCommand completed\n";
+}
+
+int Server::handleGetFile(int client_fd) {
     uint32_t filename_len_net = 0;
     if (Network::recv_all(client_fd, (char*)&filename_len_net, sizeof(filename_len_net)) <= 0) {
-        perror("failed to read filenam len");
-        close(client_fd);
+        perror("failed to read filename len");
         return -1;
     }
 
     uint32_t filename_len = ntohl(filename_len_net);
 
-    std::cout << filename_len << "\n";
-
     if (filename_len >= 256) {
         std::cerr << "Filename too long\n";
-        close(client_fd);
         return -1;
     }
 
     char filename_buffer[256] = {0};
     if (Network::recv_all(client_fd, filename_buffer, filename_len) <= 0) {
         perror("failed to receive filename");
-        close(client_fd);
         return -1;
     }
 
     std::string filename(filename_buffer, filename_len);
     
-    std::cout << filename << "\n";
-    
     uint64_t filesize_net = 0;
     if (Network::recv_all(client_fd, (char*)&filesize_net, sizeof(filesize_net)) <= 0) {
         perror("Failed to receive file size");
-        close(client_fd);
         return -1;
     }
 
@@ -74,7 +200,6 @@ int get_file(int client_fd) {
 
     if (!outfile.is_open()) {
         perror("Could not open output file for writing");
-        close(client_fd);
         return -1;
     }
 
@@ -102,69 +227,39 @@ int get_file(int client_fd) {
     return 0;
 }
 
-int send_file(int client_fd) {
-    std::cout << "SEND\n";
+int Server::handleSendFile(int client_fd) {
     uint32_t filename_len_net = 0;
     if (Network::recv_all(client_fd, (char*)&filename_len_net, sizeof(filename_len_net)) <= 0) {
-        perror("failed to read filenam len");
-        close(client_fd);
+        perror("failed to read filename len");
         return -1;
     }
 
     uint32_t filename_len = ntohl(filename_len_net);
 
-    std::cout << filename_len << " " << filename_len_net << "\n";
-
     if (filename_len >= 256) {
         std::cerr << "Filename too long\n";
-        close(client_fd);
         return -1;
     }
 
     char filename_buffer[256] = {0};
     if (Network::recv_all(client_fd, filename_buffer, filename_len) <= 0) {
         perror("failed to receive filename");
-        close(client_fd);
         return -1;
     }
 
     std::string filename(filename_buffer, filename_len);
-    
-    std::cout << filename << "\n";
-
     std::string filepath = "server/" + filename;
 
     if (!std::filesystem::exists(filepath)) {
-        perror("open file failed");
-        return 1;
+        perror("file not found");
+        return -1;
     }
 
     auto filesize = std::filesystem::file_size(filepath);
 
-    if (filename.size() >= 256) {
-        perror("filename too long");
-        return 1;
-    }
-
-    // filename_len = htonl(filename.size());
-    // if (send(client_fd, &filename_len, sizeof(filename_len), 0) == -1) {
-    //     perror("send file name len failed");
-    //     close(client_fd);
-    //     return -1;
-    // }
-
-    // if (send(client_fd, filename.c_str(), filename.size(), 0) == -1) {
-    //     perror("send file name failed");
-    //     close(client_fd);
-    //     return -1;
-    // }
-
-    std::cout << "sending file size\n";
-
     uint64_t filesize_net = htobe64(filesize);
     if (send(client_fd, &filesize_net, sizeof(filesize_net), 0) == -1) {
         perror("Failed to send file size");
-        close(client_fd);
         return -1;
     }
 
@@ -172,8 +267,8 @@ int send_file(int client_fd) {
     char buffer[4096] = {0};
 
     if (!infile.is_open()) {
-        perror("Could not open file.txt for reading");
-        return 1;
+        perror("Could not open file for reading");
+        return -1;
     }
 
     while (true) {
@@ -184,7 +279,6 @@ int send_file(int client_fd) {
 
         if (send(client_fd, buffer, bytes_read, 0) == -1) {
             perror("send failed");
-            close(client_fd);
             infile.close();
             return -1;
         }
@@ -194,11 +288,10 @@ int send_file(int client_fd) {
     return 0;
 }
 
-int create_user(AuthManager* auth_manager, const int client_fd) {
+int Server::handleCreateUser(int client_fd) {
     uint32_t username_len_net = 0;
     if (Network::recv_all(client_fd, (char*)&username_len_net, sizeof(username_len_net)) <= 0) {
         perror("failed to read username len");
-        close(client_fd);
         return -1;
     }
 
@@ -207,14 +300,12 @@ int create_user(AuthManager* auth_manager, const int client_fd) {
     char username_buffer[256] = {0};
     if (Network::recv_all(client_fd, username_buffer, username_len) <= 0) {
         perror("failed to receive username");
-        close(client_fd);
         return -1;
     }
 
     uint32_t password_len_net = 0;
     if (Network::recv_all(client_fd, (char*)&password_len_net, sizeof(password_len_net)) <= 0) {
         perror("failed to read password len");
-        close(client_fd);
         return -1;
     }
 
@@ -223,7 +314,6 @@ int create_user(AuthManager* auth_manager, const int client_fd) {
     char password_buffer[256] = {0};
     if (Network::recv_all(client_fd, password_buffer, password_len) <= 0) {
         perror("failed to receive password");
-        close(client_fd);
         return -1;
     }
 
@@ -233,21 +323,16 @@ int create_user(AuthManager* auth_manager, const int client_fd) {
 
     std::string message = ok ? "User Created" : "Create user failed";
     if (Network::send_string(client_fd, message, "create_user_feedback") != 0) {
-        // if sending feedback fails, just log
         perror("send feedback failed");
     }
 
     return ok ? 0 : -1;
 }
 
-int login(AuthManager* auth_manager, const int client_fd) {
-
-    std::cout << "login\n";
-
+int Server::handleLogin(int client_fd) {
     uint32_t username_len_net = 0;
     if (Network::recv_all(client_fd, (char*)&username_len_net, sizeof(username_len_net)) <= 0) {
         perror("failed to read username len");
-        close(client_fd);
         return -1;
     }
 
@@ -256,25 +341,20 @@ int login(AuthManager* auth_manager, const int client_fd) {
     char username_buffer[256] = {0};
     if (Network::recv_all(client_fd, username_buffer, username_len) <= 0) {
         perror("failed to receive username");
-        close(client_fd);
         return -1;
     }
 
     uint32_t password_len_net = 0;
     if (Network::recv_all(client_fd, (char*)&password_len_net, sizeof(password_len_net)) <= 0) {
         perror("failed to read password len");
-        close(client_fd);
         return -1;
     }
-
-    std::cout << "here\n";
 
     uint32_t password_len = ntohl(password_len_net);
 
     char password_buffer[256] = {0};
     if (Network::recv_all(client_fd, password_buffer, password_len) <= 0) {
         perror("failed to receive password");
-        close(client_fd);
         return -1;
     }
 
@@ -288,14 +368,14 @@ int login(AuthManager* auth_manager, const int client_fd) {
         return -1;
     }
 
-    // SEND FEEDBACK
+    // Send feedback
     std::string ok_msg("Login successful");
     if (Network::send_string(client_fd, ok_msg, "login_feedback") != 0) {
         perror("send login feedback failed");
         return -1;
     }
 
-    // SEND TOKEN (as length-prefixed string)
+    // Send token
     if (Network::send_string(client_fd, token.value(), "token") != 0) {
         perror("send token failed");
         return -1;
@@ -304,126 +384,24 @@ int login(AuthManager* auth_manager, const int client_fd) {
     return 0;
 }
 
-int logout(AuthManager* auth_manager, const int client_fd) {
-    // RECEIVE TOKEN
-
-    //SEND FEEDBACK
-}
-
-int main() {
-    Database* db = nullptr;
-    AuthManager* auth_manager = nullptr;
-
-    try {
-        db = new Database("server.db");   // creates the file if not exists
-        initialize_schema(*db);
-
-        std::cout << "Database initialized successfully.\n";
-
-        auth_manager = new AuthManager(db->get_handle());
-
-    } catch (const std::exception& ex) {
-        std::cerr << "Fatal error: " << ex.what() << "\n";
-        delete auth_manager;
-        delete db;
-        return 1;
-    }
+int Server::handleLogout(int client_fd) {
     
-    int server_fd, client_fd;
-    struct sockaddr_in server_addr;
-    struct sockaddr_in client_addr;
-
-    socklen_t client_len = sizeof(client_addr);
-
-    // Create thread pool with 4 worker threads
-    ThreadPool pool(4);
-
-    server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd == -1) {
-        perror("socket failed");
-        return 1;
+    if (!auth_manager) {
+        std::cerr << "ERROR: auth_manager is nullptr!" << std::endl;
+        return -1;
     }
-
-    int opt = 1;
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
-        perror("setsockopt failed");
-        close(server_fd);
-        return 1;
-    }
-
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(8080);
-    memset(&(server_addr.sin_zero), '\0', 8);
-
-    if (bind(server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
-        close(server_fd);
-        perror("bind failed");
-        return 1;
-    }
-
-    if (listen(server_fd, 5) == -1) {
-        close(server_fd);
-        perror("listen failed");
-        return 1;
-    }
-
-    while (true) {
-        std::cout << "Server listening on port 8080...\n";
-
-        client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
-
-        if (client_fd == -1) {
-            perror("accept failed");
-            continue;
-        }
-        std::cout << "Client connected\n";
-
-        // Submit client handling to thread pool
-        pool.submit([client_fd, auth_manager]() {
-            char command[5] = {0};
-            if (Network::recv_all(client_fd, command, 5) <= 0) {
-                perror("failed to receive command");
-                close(client_fd);
-                return;
-            }
-
-            std::cout << "Command: " << command << "\n";
-
-            if (strcmp(command, "send") == 0) {
-                get_file(client_fd);
-            }
-            else if (strcmp(command, "get.") == 0) {
-                send_file(client_fd);
-            }
-            else if (strcmp(command, "crte") == 0) {
-                create_user(auth_manager, client_fd);
-            }
-            else if (strcmp(command, "lgin") == 0) {
-                std::cout << "hey\n\n";
-                login(auth_manager, client_fd);
-            }
-            else if (strcmp(command, "lgou") == 0) {
-                logout(auth_manager, client_fd);
-            }
-
-            std::cout << "Closing connection\n";
-            close(client_fd);
-        });
-    }
-
-    close(server_fd);
+        
+    std::string token;
     
-    delete auth_manager;
-    delete db;
+    if (Network::recv_string(client_fd, token, "token") != 0) {
+        perror("failed to receive token");
+        return -1;
+    }
 
+    auth_manager->logout(token);
+        
+    std::string message("Logged out successfully");
+    Network::send_string(client_fd, message, "logout_feedback");
+        
     return 0;
 }
-
-
-
-// MAKE SERVER AND CLIENT CLASSES
-// FILE FOLDERS STRUCTURE
-// MORE FUNCTIONS - FUNCTION TO SEND NEAPARAT AND RECEIVE
-// CHECKS - WHEN CALLING INT FUNCTIONS
-// FEEDBACK EVERYWHERE

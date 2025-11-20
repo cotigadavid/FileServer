@@ -1,4 +1,5 @@
-#include "authmanager.h"
+#include "AuthManager.h"
+
 #include <sodium.h>
 #include <iostream>
 #include <ctime>

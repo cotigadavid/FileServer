@@ -3,7 +3,7 @@
 #include <optional>
 #include <sqlite3.h>
 
-#include "database.h"
+#include "Database.h"
 
 class AuthManager {
 public:
