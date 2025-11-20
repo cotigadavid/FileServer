@@ -125,9 +125,7 @@ void Server::handleClient(int client_fd) {
     std::cout << "Command: " << command << "\n";
 
     try {
-        std::cout << "About to handle command\n";
         handleCommand(client_fd, command);
-        std::cout << "Command handled successfully\n";
     } catch (const std::exception& ex) {
         std::cerr << "Exception in handleCommand: " << ex.what() << "\n";
     } catch (...) {
@@ -164,26 +162,13 @@ void Server::handleCommand(int client_fd, const char* command) {
 }
 
 int Server::handleGetFile(int client_fd) {
-    uint32_t filename_len_net = 0;
-    if (Network::recv_all(client_fd, (char*)&filename_len_net, sizeof(filename_len_net)) <= 0) {
-        perror("failed to read filename len");
-        return -1;
-    }
-
-    uint32_t filename_len = ntohl(filename_len_net);
-
-    if (filename_len >= 256) {
-        std::cerr << "Filename too long\n";
-        return -1;
-    }
-
-    char filename_buffer[256] = {0};
-    if (Network::recv_all(client_fd, filename_buffer, filename_len) <= 0) {
+    std::vector<char> filename_vec;
+    if (Network::recv_bytes(client_fd, filename_vec, "filename") != 0) {
         perror("failed to receive filename");
         return -1;
     }
 
-    std::string filename(filename_buffer, filename_len);
+    std::string filename(filename_vec.begin(), filename_vec.end());
     
     uint64_t filesize_net = 0;
     if (Network::recv_all(client_fd, (char*)&filesize_net, sizeof(filesize_net)) <= 0) {
@@ -228,26 +213,13 @@ int Server::handleGetFile(int client_fd) {
 }
 
 int Server::handleSendFile(int client_fd) {
-    uint32_t filename_len_net = 0;
-    if (Network::recv_all(client_fd, (char*)&filename_len_net, sizeof(filename_len_net)) <= 0) {
-        perror("failed to read filename len");
-        return -1;
-    }
-
-    uint32_t filename_len = ntohl(filename_len_net);
-
-    if (filename_len >= 256) {
-        std::cerr << "Filename too long\n";
-        return -1;
-    }
-
-    char filename_buffer[256] = {0};
-    if (Network::recv_all(client_fd, filename_buffer, filename_len) <= 0) {
+    std::vector<char> filename_vec;
+    if (Network::recv_bytes(client_fd, filename_vec, "filename") != 0) {
         perror("failed to receive filename");
         return -1;
     }
 
-    std::string filename(filename_buffer, filename_len);
+    std::string filename(filename_vec.begin(), filename_vec.end());
     std::string filepath = "server/" + filename;
 
     if (!std::filesystem::exists(filepath)) {
@@ -289,36 +261,20 @@ int Server::handleSendFile(int client_fd) {
 }
 
 int Server::handleCreateUser(int client_fd) {
-    uint32_t username_len_net = 0;
-    if (Network::recv_all(client_fd, (char*)&username_len_net, sizeof(username_len_net)) <= 0) {
-        perror("failed to read username len");
-        return -1;
-    }
-
-    uint32_t username_len = ntohl(username_len_net);
-
-    char username_buffer[256] = {0};
-    if (Network::recv_all(client_fd, username_buffer, username_len) <= 0) {
+    std::vector<char> username_vec;
+    if (Network::recv_bytes(client_fd, username_vec, "username") != 0) {
         perror("failed to receive username");
         return -1;
     }
 
-    uint32_t password_len_net = 0;
-    if (Network::recv_all(client_fd, (char*)&password_len_net, sizeof(password_len_net)) <= 0) {
-        perror("failed to read password len");
-        return -1;
-    }
-
-    uint32_t password_len = ntohl(password_len_net);
-
-    char password_buffer[256] = {0};
-    if (Network::recv_all(client_fd, password_buffer, password_len) <= 0) {
+    std::vector<char> password_vec;
+    if (Network::recv_bytes(client_fd, password_vec, "password") != 0) {
         perror("failed to receive password");
         return -1;
     }
 
-    std::string username(username_buffer, username_len);
-    std::string password(password_buffer, password_len);
+    std::string username(username_vec.begin(), username_vec.end());
+    std::string password(password_vec.begin(), password_vec.end());
     bool ok = auth_manager->register_user(username, password);
 
     std::string message = ok ? "User Created" : "Create user failed";
@@ -330,36 +286,20 @@ int Server::handleCreateUser(int client_fd) {
 }
 
 int Server::handleLogin(int client_fd) {
-    uint32_t username_len_net = 0;
-    if (Network::recv_all(client_fd, (char*)&username_len_net, sizeof(username_len_net)) <= 0) {
-        perror("failed to read username len");
-        return -1;
-    }
-
-    uint32_t username_len = ntohl(username_len_net);
-
-    char username_buffer[256] = {0};
-    if (Network::recv_all(client_fd, username_buffer, username_len) <= 0) {
+    std::vector<char> username_vec;
+    if (Network::recv_bytes(client_fd, username_vec, "username") != 0) {
         perror("failed to receive username");
         return -1;
     }
 
-    uint32_t password_len_net = 0;
-    if (Network::recv_all(client_fd, (char*)&password_len_net, sizeof(password_len_net)) <= 0) {
-        perror("failed to read password len");
-        return -1;
-    }
-
-    uint32_t password_len = ntohl(password_len_net);
-
-    char password_buffer[256] = {0};
-    if (Network::recv_all(client_fd, password_buffer, password_len) <= 0) {
+    std::vector<char> password_vec;
+    if (Network::recv_bytes(client_fd, password_vec, "password") != 0) {
         perror("failed to receive password");
         return -1;
     }
 
-    std::string username(username_buffer, username_len);
-    std::string password(password_buffer, password_len);
+    std::string username(username_vec.begin(), username_vec.end());
+    std::string password(password_vec.begin(), password_vec.end());
 
     std::optional<std::string> token = auth_manager->login(username, password);
     if (token == std::nullopt) {
@@ -405,3 +345,9 @@ int Server::handleLogout(int client_fd) {
         
     return 0;
 }
+
+
+// MORE FUNCTIONS - FUNCTION TO SEND NEAPARAT AND RECEIVE
+// CHECKS - WHEN CALLING INT FUNCTIONS
+// FEEDBACK EVERYWHERE
+// REPLACE MOST SEND AND RECEIVE WITH NETWORK:: FUNCTIONALITY

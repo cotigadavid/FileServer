@@ -60,28 +60,11 @@ bool Client::createUser(const std::string& username, const std::string& password
         return false;
     }
 
-    uint32_t username_len = htonl(username.size());
-    if (send(sockfd, &username_len, sizeof(username_len), 0) == -1) {
-        perror("send username len failed");
+    if (Network::send_string(sockfd, username, "username") != 0) {
         closeConnection();
         return false;
     }
-
-    if (send(sockfd, username.c_str(), username.size(), 0) == -1) {
-        perror("send username failed");
-        closeConnection();
-        return false;
-    }
-
-    uint32_t password_len = htonl(password.size());
-    if (send(sockfd, &password_len, sizeof(password_len), 0) == -1) {
-        perror("send password len failed");
-        closeConnection();
-        return false;
-    }
-
-    if (send(sockfd, password.c_str(), password.size(), 0) == -1) {
-        perror("send password failed");
+    if (Network::send_string(sockfd, password, "password") != 0) {
         closeConnection();
         return false;
     }
@@ -108,28 +91,11 @@ bool Client::login(const std::string& username, const std::string& password) {
         return false;
     }
 
-    uint32_t username_len = htonl(username.size());
-    if (send(sockfd, &username_len, sizeof(username_len), 0) == -1) {
-        perror("send username len failed");
+    if (Network::send_string(sockfd, username, "username") != 0) {
         closeConnection();
         return false;
     }
-
-    if (send(sockfd, username.c_str(), username.size(), 0) == -1) {
-        perror("send username failed");
-        closeConnection();
-        return false;
-    }
-
-    uint32_t password_len = htonl(password.size());
-    if (send(sockfd, &password_len, sizeof(password_len), 0) == -1) {
-        perror("send password len failed");
-        closeConnection();
-        return false;
-    }
-
-    if (send(sockfd, password.c_str(), password.size(), 0) == -1) {
-        perror("send password failed");
+    if (Network::send_string(sockfd, password, "password") != 0) {
         closeConnection();
         return false;
     }
@@ -222,15 +188,7 @@ bool Client::uploadFile(const std::string& filepath) {
         return false;
     }
 
-    uint32_t filename_len = htonl(filename.size());
-    if (send(sockfd, &filename_len, sizeof(filename_len), 0) == -1) {
-        perror("send file name len failed");
-        closeConnection();
-        return false;
-    }
-
-    if (send(sockfd, filename.c_str(), filename.size(), 0) == -1) {
-        perror("send file name failed");
+    if (Network::send_string(sockfd, filename, "filename") != 0) {
         closeConnection();
         return false;
     }
@@ -279,15 +237,7 @@ bool Client::downloadFile(const std::string& filename) {
         return false;
     }
 
-    uint32_t filename_len = htonl(filename.size());
-    if (send(sockfd, &filename_len, sizeof(filename_len), 0) == -1) {
-        perror("send file name len failed");
-        closeConnection();
-        return false;
-    }
-
-    if (send(sockfd, filename.c_str(), filename.size(), 0) == -1) {
-        perror("send file name failed");
+    if (Network::send_string(sockfd, filename, "filename") != 0) {
         closeConnection();
         return false;
     }
