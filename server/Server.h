@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include "../common/Network.h"
 
 // Forward declarations
 class ThreadPool;
@@ -12,6 +13,7 @@ private:
     int server_fd;
     int port;
     bool running;
+    bool tls_ready;              // TLS context initialized flag
     
     ThreadPool* thread_pool;
     Database* db;
@@ -27,6 +29,9 @@ private:
     int handleCreateUser(int client_fd);
     int handleLogin(int client_fd);
     int handleLogout(int client_fd);
+    int handleList(int client_fd);
+
+    bool setupTLS();             // initialize TLS (calls Network::init_server_tls)
 
 public:
     Server(int port = 8080, int num_threads = 4);

@@ -1,8 +1,16 @@
 # Compiler and flags
 CXX = g++
 CXXFLAGS = -std=c++17 -Wall -Wextra -pthread -g
-CLIENT_LDFLAGS = -pthread -lsodium
-SERVER_LDFLAGS = -pthread -lsqlite3 -lsodium
+# OpenSSL flags (pkg-config preferred, fallback to -lssl -lcrypto)
+OPENSSL_CFLAGS ?= $(shell pkg-config --cflags openssl 2>/dev/null)
+OPENSSL_LIBS ?= $(shell pkg-config --libs openssl 2>/dev/null)
+ifeq ($(OPENSSL_LIBS),)
+OPENSSL_LIBS = -lssl -lcrypto
+endif
+CXXFLAGS += $(OPENSSL_CFLAGS)
+
+CLIENT_LDFLAGS = -pthread -lsodium $(OPENSSL_LIBS)
+SERVER_LDFLAGS = -pthread -lsqlite3 -lsodium $(OPENSSL_LIBS)
 
 # Directories
 CLIENT_DIR = client
@@ -10,10 +18,15 @@ SERVER_DIR = server
 COMMON_DIR = common
 DATABASE_DIR = database
 AUTH_DIR = auth
+CERT_DIR = cert
 
 # Output executables
 CLIENT_BIN = $(CLIENT_DIR)/client
 SERVER_BIN = $(SERVER_DIR)/server
+
+# Certificate and key files (updated to .pem)
+CERT_KEY = $(CERT_DIR)/server-key.pem
+CERT_CRT = $(CERT_DIR)/server-cert.pem
 
 # Recursive wildcard function to find all .cpp files
 rwildcard = $(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(subst *,%,$2),$d))
@@ -81,6 +94,16 @@ run-client: $(CLIENT_BIN)
 run-server: $(SERVER_BIN)
 	./$(SERVER_BIN)
 
+# Generate self-signed server certificate and key
+cert:
+	mkdir -p $(CERT_DIR)
+	openssl req -newkey rsa:4096 -nodes -keyout $(CERT_KEY) -x509 -days 365 -out $(CERT_CRT) -subj "/CN=localhost"
+	chmod 600 $(CERT_KEY)
+	chmod 644 $(CERT_CRT)
+	@echo "Generated certificates:"
+	@echo "  Private key: $(CERT_KEY)"
+	@echo "  Certificate: $(CERT_CRT)"
+
 # Debug: print what we found (run with 'make debug')
 debug:
 	@echo "CLIENT_SRC: $(CLIENT_SRC)"
@@ -94,4 +117,4 @@ debug:
 	@echo "DATABASE_OBJ: $(DATABASE_OBJ)"
 	@echo "AUTH_OBJ: $(AUTH_OBJ)"
 
-.PHONY: all client server clean rebuild run-client run-server debug
+.PHONY: all client server clean rebuild run-client run-server debug cert

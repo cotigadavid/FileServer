@@ -3,6 +3,8 @@
 #include <sodium.h>
 #include <iostream>
 #include <ctime>
+#include <optional>
+#include <stdexcept>
 
 AuthManager::AuthManager(sqlite3* db)
     : db(db)
@@ -158,4 +160,30 @@ void AuthManager::logout(const std::string& token) {
     }
 
     sqlite3_finalize(stmt);
+}
+
+std::string AuthManager::username_from_token(const std::string& token) {
+    std::cout << token << std::endl;
+    sqlite3_stmt* stmt;
+    const char* sql =
+        "SELECT u.username "
+        "FROM sessions s "
+        "JOIN users u ON s.user_id = u.id "
+        "WHERE s.token = ? AND s.expires_at > ?;";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        std::cerr << "username_from_token prepare failed: " << sqlite3_errmsg(db) << "\n";
+        return "NULL";
+    }
+    sqlite3_bind_text(stmt, 1, token.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, (sqlite3_int64)time(nullptr));
+    std::optional<std::string> result;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const unsigned char* uname = sqlite3_column_text(stmt, 0);
+        if (uname) result = std::string(reinterpret_cast<const char*>(uname));
+    }
+    sqlite3_finalize(stmt);
+    if (!result.has_value()) {
+        throw std::runtime_error("Invalid or expired token");
+    }
+    return result.value();
 }

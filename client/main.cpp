@@ -8,7 +8,7 @@ int main() {
     std::string line;
 
     std::cout << "File Server Client\n";
-    std::cout << "Commands: create_user, login, logout, send <file>, get <file>, quit\n\n";
+    std::cout << "Commands: create_user, login, logout, send <file>, get <file>, list, quit\n\n";
 
     while (true) {
         std::cout << "> ";
@@ -60,6 +60,10 @@ int main() {
         }
         else if (command == "logout") {
             client.logout();
+        }
+        else if (command == "list") {
+            std::cout << "ENTER LSIT\n";
+            client.list();
         }
         else if (command == "quit") {
             std::cout << "Exiting...\n";

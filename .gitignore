@@ -65,3 +65,6 @@ node_modules/
 # Core dumps
 core
 core.*
+
+#Certificates
+**/*.pem

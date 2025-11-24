@@ -1,8 +1,9 @@
 #include "Server.h"
+#include "../common/Network.h"
 #include "ThreadPool.h"
-#include "Network.h"
-#include "Database.h"
-#include "AuthManager.h"
+#include "../database/Database.h"
+#include "../auth/AuthManager.h"
+
 
 #include <iostream>
 #include <fstream>
@@ -10,6 +11,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <filesystem>
+
 
 void initialize_schema(Database& db);
 
@@ -72,6 +74,12 @@ bool Server::initialize() {
         return false;
     }
 
+    // Initialize TLS via Network (certificate + key paths)
+    if (Network::init_server_tls("cert/server-cert.pem", "cert/server-key.pem") != 0) {
+        std::cerr << "TLS init failed\n";
+        return false;
+    }
+
     running = true;
     return true;
 }
@@ -115,12 +123,13 @@ void Server::stop() {
 }
 
 void Server::handleClient(int client_fd) {
-    char command[5] = {0};
-    if (Network::recv_all(client_fd, command, 5) <= 0) {
-        perror("failed to receive command");
+    if (Network::wrap_server_connection(client_fd) != 0) {
+        std::cerr << "TLS accept failed\n";
         close(client_fd);
         return;
     }
+    char command[5] = {0};
+    if (Network::recv_all(client_fd, command, 5) <= 0) { perror("failed to receive command"); Network::close_tls(client_fd); close(client_fd); return; }
 
     std::cout << "Command: " << command << "\n";
 
@@ -133,6 +142,7 @@ void Server::handleClient(int client_fd) {
     }
 
     std::cout << "Closing connection\n";
+    Network::close_tls(client_fd);
     close(client_fd);
 }
 
@@ -154,6 +164,9 @@ void Server::handleCommand(int client_fd, const char* command) {
     else if (strcmp(command, "lgou") == 0) {
         handleLogout(client_fd);
     }
+    else if (strcmp(command, "list") == 0) {
+        handleList(client_fd);
+    }
     else {
         std::cerr << "Unknown command: " << command << "\n";
     }
@@ -162,25 +175,42 @@ void Server::handleCommand(int client_fd, const char* command) {
 }
 
 int Server::handleGetFile(int client_fd) {
+    
+    std::string token;
+    if (Network::recv_string(client_fd, token, "token") != 0) {
+        perror("recv token failed");
+        return -1;
+    }
+    
+    std::string username;
+    try {
+        username = auth_manager->username_from_token(token);
+    } catch (...) {
+        std::cerr << "Failed to resolve username from token\n";
+        return -1;
+    }
     std::vector<char> filename_vec;
     if (Network::recv_bytes(client_fd, filename_vec, "filename") != 0) {
         perror("failed to receive filename");
         return -1;
     }
-
     std::string filename(filename_vec.begin(), filename_vec.end());
-    
     uint64_t filesize_net = 0;
     if (Network::recv_all(client_fd, (char*)&filesize_net, sizeof(filesize_net)) <= 0) {
         perror("Failed to receive file size");
         return -1;
     }
-
-    uint64_t filesize = be64toh(filesize_net); 
-
-    std::cout << "Receiving file: " << filename << " (" << filesize << " bytes)\n";
-
-    std::string save_path = "server/" + filename;
+    uint64_t filesize = be64toh(filesize_net);
+    // Create per-user directory
+    std::string user_dir = "server/" + username;
+    std::error_code ec;
+    std::filesystem::create_directories(user_dir, ec);
+    if (ec) {
+        std::cerr << "Failed to create user directory: " << ec.message() << "\n";
+        return -1;
+    }
+    std::cout << "Receiving file for user '" << username << "': " << filename << " (" << filesize << " bytes)\n";
+    std::string save_path = user_dir + "/" + filename;
     std::ofstream outfile(save_path, std::ios::binary);
 
     if (!outfile.is_open()) {
@@ -192,8 +222,10 @@ int Server::handleGetFile(int client_fd) {
     ssize_t bytes_received;
     uint64_t total_received = 0;
 
-    while (total_received < filesize && (bytes_received = recv(client_fd, buffer, sizeof(buffer), 0)) > 0) {
-        size_t to_write = std::min((size_t)bytes_received, (size_t)(filesize - total_received));
+    while (total_received < filesize) {
+        ssize_t r = Network::read_some(client_fd, buffer, sizeof(buffer));
+        if (r <= 0) break;
+        size_t to_write = std::min((size_t)r, (size_t)(filesize - total_received));
         outfile.write(buffer, to_write);
         total_received += to_write;
     }
@@ -213,14 +245,27 @@ int Server::handleGetFile(int client_fd) {
 }
 
 int Server::handleSendFile(int client_fd) {
+    // Receive auth token first
+    std::string token;
+    if (Network::recv_string(client_fd, token, "token") != 0) {
+        perror("recv token failed");
+        return -1;
+    }
+
+    std::string username;
+    try {
+        username = auth_manager->username_from_token(token); // TODO: implement if missing
+    } catch (...) {
+        std::cerr << "Failed to resolve username from token\n";
+        return -1;
+    }
     std::vector<char> filename_vec;
     if (Network::recv_bytes(client_fd, filename_vec, "filename") != 0) {
         perror("failed to receive filename");
         return -1;
     }
-
     std::string filename(filename_vec.begin(), filename_vec.end());
-    std::string filepath = "server/" + filename;
+    std::string filepath = "server/" + username + "/" + filename;
 
     if (!std::filesystem::exists(filepath)) {
         perror("file not found");
@@ -230,7 +275,7 @@ int Server::handleSendFile(int client_fd) {
     auto filesize = std::filesystem::file_size(filepath);
 
     uint64_t filesize_net = htobe64(filesize);
-    if (send(client_fd, &filesize_net, sizeof(filesize_net), 0) == -1) {
+    if (Network::send_raw(client_fd, &filesize_net, sizeof(filesize_net)) == -1) {
         perror("Failed to send file size");
         return -1;
     }
@@ -249,7 +294,7 @@ int Server::handleSendFile(int client_fd) {
         if (bytes_read <= 0)
             break;
 
-        if (send(client_fd, buffer, bytes_read, 0) == -1) {
+        if (Network::send_raw(client_fd, buffer, bytes_read) == -1) {
             perror("send failed");
             infile.close();
             return -1;
@@ -346,8 +391,44 @@ int Server::handleLogout(int client_fd) {
     return 0;
 }
 
+int Server::handleList(int client_fd) {
+    std::string token;
+    if (Network::recv_string(client_fd, token, "token") != 0) {
+        perror("recv token failed");
+        return -1;
+    }
 
-// MORE FUNCTIONS - FUNCTION TO SEND NEAPARAT AND RECEIVE
-// CHECKS - WHEN CALLING INT FUNCTIONS
-// FEEDBACK EVERYWHERE
-// REPLACE MOST SEND AND RECEIVE WITH NETWORK:: FUNCTIONALITY
+    std::string username;
+    try {
+        username = auth_manager->username_from_token(token);
+    } catch (...) {
+        // Invalid token: send zero count
+        uint32_t zero = htonl(0u);
+        Network::send_raw(client_fd, &zero, sizeof(zero));
+        return -1;
+    }
+
+    std::string user_dir = "server/" + username;
+    std::vector<std::string> files;
+    if (std::filesystem::exists(user_dir)) {
+        for (const auto& entry : std::filesystem::directory_iterator(user_dir)) {
+            if (entry.is_regular_file()) {
+                files.push_back(entry.path().filename().string());
+            }
+        }
+    }
+
+    uint32_t count_net = htonl(static_cast<uint32_t>(files.size()));
+    if (Network::send_raw(client_fd, &count_net, sizeof(count_net)) == -1) {
+        perror("send file count failed");
+        return -1;
+    }
+
+    for (const auto& name : files) {
+        if (Network::send_string(client_fd, name, "filename") != 0) {
+            perror("send filename failed");
+            return -1;
+        }
+    }
+    return 0;
+}

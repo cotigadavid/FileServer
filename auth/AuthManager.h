@@ -3,7 +3,7 @@
 #include <optional>
 #include <sqlite3.h>
 
-#include "Database.h"
+#include "../database/Database.h"
 
 class AuthManager {
 public:
@@ -13,6 +13,7 @@ public:
     std::optional<std::string> login(const std::string& username, const std::string& password);
     bool validate_token(const std::string& token);
     void logout(const std::string& token);
+    std::string username_from_token(const std::string& token);
 
 private:
     sqlite3* db;

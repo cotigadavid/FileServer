@@ -1,5 +1,5 @@
 #include "Client.h"
-#include "Network.h"
+#include "../common/Network.h"
 
 #include <iostream>
 #include <fstream>
@@ -15,10 +15,14 @@ Client::Client(const std::string& ip, int port)
 
 Client::~Client() {
     closeConnection();
+    // (Keep g_client_ctx for process lifetime; free at program end if desired)
 }
 
 bool Client::connectToServer() {
-    if (connected) return true;
+    if (connected) 
+        return true;
+    if (Network::init_client_tls() != 0) 
+        return false; // TLS ctx
 
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd == -1) {
@@ -38,11 +42,19 @@ bool Client::connectToServer() {
         return false;
     }
 
+    if (Network::wrap_client_connection(sockfd) != 0) { 
+        std::cerr << "TLS handshake failed\n"; 
+        close(sockfd); 
+        sockfd = -1; 
+        return false; 
+    }
     connected = true;
     return true;
 }
 
 void Client::closeConnection() {
+    Network::close_tls(sockfd);
+    // ensure TLS cleanup if implemented (optional call)
     if (sockfd != -1) {
         close(sockfd);
         sockfd = -1;
@@ -54,11 +66,7 @@ bool Client::createUser(const std::string& username, const std::string& password
     if (!connectToServer()) return false;
 
     char command_buffer[] = "crte";
-    if (send(sockfd, command_buffer, sizeof(command_buffer), 0) == -1) {
-        perror("send command type");
-        closeConnection();
-        return false;
-    }
+    if (Network::send_raw(sockfd, command_buffer, 5) != 0) { perror("send command type"); closeConnection(); return false; }
 
     if (Network::send_string(sockfd, username, "username") != 0) {
         closeConnection();
@@ -85,11 +93,7 @@ bool Client::login(const std::string& username, const std::string& password) {
     if (!connectToServer()) return false;
 
     char command_buffer[] = "lgin";
-    if (send(sockfd, command_buffer, sizeof(command_buffer), 0) == -1) {
-        perror("send command type");
-        closeConnection();
-        return false;
-    }
+    if (Network::send_raw(sockfd, command_buffer, 5) != 0) { perror("send command type"); closeConnection(); return false; }
 
     if (Network::send_string(sockfd, username, "username") != 0) {
         closeConnection();
@@ -137,11 +141,7 @@ bool Client::logout() {
     if (!connectToServer()) return false;
 
     char command_buffer[] = "lgou";
-    if (send(sockfd, command_buffer, sizeof(command_buffer), 0) == -1) {
-        perror("send command type");
-        closeConnection();
-        return false;
-    }
+    if (Network::send_raw(sockfd, command_buffer, 5) != 0) { perror("send command type"); closeConnection(); return false; }
 
     if (Network::send_string(sockfd, token, "token") != 0) {
         perror("send token failed");
@@ -173,18 +173,20 @@ bool Client::uploadFile(const std::string& filepath) {
         return false;
     }
 
+    char command_buffer[] = "send";
+    if (Network::send_raw(sockfd, command_buffer, 5) != 0) { perror("send command type"); closeConnection(); return false; }
+
+    if (Network::send_string(sockfd, token, "token") != 0) {
+        perror("send token failed");
+        closeConnection();
+        return false;
+    }
+
     std::string filename = std::filesystem::path(filepath).filename().string();
     auto filesize = std::filesystem::file_size(filepath);
 
     if (filename.size() >= 256) {
         std::cerr << "Filename too long\n";
-        return false;
-    }
-
-    char command_buffer[] = "send";
-    if (send(sockfd, command_buffer, sizeof(command_buffer), 0) == -1) {
-        perror("send command type");
-        closeConnection();
         return false;
     }
 
@@ -194,11 +196,7 @@ bool Client::uploadFile(const std::string& filepath) {
     }
 
     uint64_t filesize_net = htobe64(filesize);
-    if (send(sockfd, &filesize_net, sizeof(filesize_net), 0) == -1) {
-        perror("Failed to send file size");
-        closeConnection();
-        return false;
-    }
+    if (Network::send_raw(sockfd, &filesize_net, sizeof(filesize_net)) != 0) { perror("Failed to send file size"); closeConnection(); return false; }
 
     std::ifstream infile(filepath, std::ios::binary);
     if (!infile.is_open()) {
@@ -213,12 +211,7 @@ bool Client::uploadFile(const std::string& filepath) {
         ssize_t bytes_read = infile.gcount();
         if (bytes_read <= 0) break;
 
-        if (send(sockfd, buffer, bytes_read, 0) == -1) {
-            perror("send failed");
-            infile.close();
-            closeConnection();
-            return false;
-        }
+        if (Network::send_raw(sockfd, buffer, (size_t)bytes_read) != 0) { perror("send failed"); infile.close(); closeConnection(); return false; }
     }
 
     infile.close();
@@ -231,8 +224,10 @@ bool Client::downloadFile(const std::string& filename) {
     if (!connectToServer()) return false;
 
     char command_buffer[] = "get.";
-    if (send(sockfd, command_buffer, sizeof(command_buffer), 0) == -1) {
-        perror("send command type");
+    if (Network::send_raw(sockfd, command_buffer, 5) != 0) { perror("send command type"); closeConnection(); return false; }
+
+    if (Network::send_string(sockfd, token, "token") != 0) {
+        perror("send token failed");
         closeConnection();
         return false;
     }
@@ -265,7 +260,9 @@ bool Client::downloadFile(const std::string& filename) {
     ssize_t bytes_received;
     uint64_t total_received = 0;
 
-    while (total_received < filesize && (bytes_received = recv(sockfd, buffer, sizeof(buffer), 0)) > 0) {
+    while (total_received < filesize) {
+        ssize_t bytes_received = Network::read_some(sockfd, buffer, sizeof(buffer));
+        if (bytes_received <= 0) break;
         size_t to_write = std::min((size_t)bytes_received, (size_t)(filesize - total_received));
         outfile.write(buffer, to_write);
         total_received += to_write;
@@ -282,4 +279,42 @@ bool Client::downloadFile(const std::string& filename) {
         closeConnection();
         return false;
     }
+}
+
+bool Client::list() {
+    if (!logged_in) {
+        std::cerr << "Not logged in\n";
+        return false;
+    }
+    if (!connectToServer()) return false;
+
+    char command_buffer[] = "list";
+    if (Network::send_raw(sockfd, command_buffer, 5) != 0) { perror("send command type"); closeConnection(); return false; }
+
+    if (Network::send_string(sockfd, token, "token") != 0) {
+        perror("send token failed");
+        closeConnection();
+        return false;
+    }
+
+    uint32_t count_net = 0;
+    if (Network::recv_all(sockfd, (char*)&count_net, sizeof(count_net)) <= 0) {
+        perror("recv file count failed");
+        closeConnection();
+        return false;
+    }
+    uint32_t count = ntohl(count_net);
+    std::cout << "Files (" << count << "):\n";
+    for (uint32_t i = 0; i < count; ++i) {
+        std::string fname;
+        if (Network::recv_string(sockfd, fname, "filename") != 0) {
+            perror("recv filename failed");
+            closeConnection();
+            return false;
+        }
+        std::cout << " - " << fname << "\n";
+    }
+
+    closeConnection();
+    return true;
 }

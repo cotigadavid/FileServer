@@ -20,16 +20,14 @@ public:
     Client(const std::string& ip = "127.0.0.1", int port = 8080);
     ~Client();
 
-    // Authentication operations
     bool createUser(const std::string& username, const std::string& password);
     bool login(const std::string& username, const std::string& password);
     bool logout();
 
-    // File operations
     bool uploadFile(const std::string& filepath);
     bool downloadFile(const std::string& filename);
+    bool list();
 
-    // State queries
     bool isLoggedIn() const { return logged_in; }
     bool isConnected() const { return connected; }
     const std::string& getToken() const { return token; }
